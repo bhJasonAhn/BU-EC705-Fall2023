@@ -1,0 +1,139 @@
+---
+title: "EC705 Assignment 3"
+author: "Byoung-Hyuk Ahn (U51992707)"
+date: "2023-11-10"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 0. Setting
+
+```{r libraries, message = FALSE, warning = FALSE}
+library(nycflights13)
+library(dplyr)
+library(stargazer)
+library(boot)
+library(doParallel)
+library(foreach)
+```
+
+
+
+## 1. SE from Original Linear Regression
+
+```{r SE from original lm, message = FALSE}
+
+flights.noNAs         <- nycflights13::flights[!is.na(flights$arr_delay)
+                                       &!is.na(flights$distance),]
+
+original.lm.SE        <- lm(data = flights.noNAs,
+                            formula = arr_delay ~ log(distance)) %>%
+                         summary()
+
+original.result.coef.SE <- original.lm.SE$coefficients[ , 2]
+```
+
+
+
+## 2. Bootstrap
+
+## 2.1. Unparallelized Bootstrapping
+
+```{r creating unparallelized bootstrapping function}
+fmla = as.formula("arr_delay ~ log(distance)")
+
+unpara.lm.SE <- function(df, fmla, nboot){
+    set.seed(12345)
+    n = nrow(df)
+    unpara.coef.SE = c()
+    for (i in 1:nboot){
+      df.sample = df[sample(1:n,size=n,replace=T),]
+      summary.model = lm(fmla, data = df.sample) %>% summary()
+      unpara.coef.SE = rbind(unpara.coef.SE, summary.model$coefficients[ , 2])
+  }
+  return(unpara.coef.SE)
+}
+```
+
+``` {r unparallelized estimation of SE, message = FALSE}
+unpara.result <- unpara.lm.SE(flights.noNAs, fmla, 500)
+```
+
+```{r means of bootstrap result and elapsed time, message = FALSE}
+unpara.result.coef.SE <- unpara.result %>%
+                        as.data.frame() %>%
+                        colMeans()
+ 
+unpara.time           <- system.time(unpara.lm.SE(flights.noNAs, fmla, 500))
+```
+
+## 2.2. Parallelized Bootstrapping
+
+```{r creating parallelized bootstrapping function}
+
+para.lm.SE     <- function(df, fmla, nboot){
+  set.seed(12345)
+  para.coef.SE = NULL
+  n = nrow(df)
+  
+  ncore        <- detectCores()
+  cl           <- makeCluster(ncore - 1, type="PSOCK")
+  registerDoParallel(cl)
+  
+  para.coef.SE <- foreach (draw = 1:nboot, .combine =rbind) %dopar% {
+    df.sample = df[sample(1:n,size=n,replace=T),]
+    model = lm(fmla, data = df.sample)
+    para.coef.SE = summary(model)$coefficients[ , 2]
+  }
+  return(para.coef.SE)
+  stopCluster(cl)
+}
+```
+
+```{r parallelized estimation of SE, message = FALSE}
+para.result <- para.lm.SE(flights.noNAs, fmla, 500)
+```
+
+```{r means of parallelized bootstrap result and elapsed time, message= FALSE}
+para.result.coef.SE <- para.result %>%
+                       as.data.frame() %>%
+                       colMeans
+para.time           <- system.time(para.lm.SE(flights.noNAs, fmla, 500))
+```
+
+## 2.4. Report
+
+```{r report, message = FALSE}
+
+final_report <- rbind(original.result.coef.SE, unpara.result.coef.SE, para.result.coef.SE) %>%
+                as.data.frame()
+
+final_time <- c(" ", unpara.time["elapsed"], para.time["elapsed"]) %>%
+              as.data.frame()
+
+final_report <-cbind(final_report, final_time)
+names(final_report)[3] <- c("Elapsed Time")
+row.names(final_report) <- c("Original LM SE", "Unparallelized SE", "Parallelized SE")
+
+final_report
+```
+
+``` {r final report, results = "asis"}
+
+stargazer(final_report,
+          summary = FALSE,
+          title = "Estimation Results",
+          type = "latex",
+          header = FALSE)
+
+```
+
+
+
+
